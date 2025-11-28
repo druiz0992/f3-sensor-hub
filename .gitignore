@@ -1,6 +1,6 @@
 # ---- Rust / Cargo ----
 /target/
-/Cargo.lock # (optional: keep if building a binary, delete if it's a library)
+/Cargo.lock 
 
 # Build artifacts
 **/*.rlib
