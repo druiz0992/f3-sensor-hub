@@ -5,7 +5,6 @@ mod globals;
 mod helpers;
 mod l3g4250d;
 mod lsm303agr;
-//mod macros;
 mod sample;
 
 use defmt_rtt as _; // or defmt_itm
@@ -19,7 +18,7 @@ use cortex_m_rt::entry;
 
 use stm32f3_discovery::leds::Leds;
 use stm32f3xx_hal::{
-    gpio::{self, Alternate, Edge, OpenDrain, Output, PushPull},
+    gpio::{self, gpioa::PA0, Alternate, Edge, OpenDrain, Output, PushPull},
     i2c::I2c,
     pac::{self, interrupt},
     prelude::*,
@@ -39,7 +38,7 @@ use core::{
 use heapless::spsc::Queue;
 
 use l3g4250d::L3g4250;
-use lsm303agr::{Lsm303, ACCELEROMETER, MAGNETOMETER};
+use lsm303agr::{Lsm303, ACCELEROMETER};
 use sample::{RawSample3D, SampleStats};
 
 type SclPin = gpio::Pin<gpio::Gpiob, gpio::U<PIN_6>, Alternate<OpenDrain, AF_4>>;
@@ -61,11 +60,13 @@ const AF_5: u8 = 5;
 
 const DECODE_FORMAT: &str = "BINARY";
 const BURST_SIZE: usize = 10;
+const PULSE_US: u16 = 20;
 
 static LAST_TIMESTAMP_ACC: AtomicU32 = AtomicU32::new(0);
 static LAST_TIMESTAMP_GYRO: AtomicU32 = AtomicU32::new(0);
 static LSM303: Mutex<RefCell<Option<Lsm303<I2cType>>>> = Mutex::new(RefCell::new(None));
 static L3G4250: Mutex<RefCell<Option<L3g4250<SpiType, CsPin>>>> = Mutex::new(RefCell::new(None));
+static PPS_PIN: Mutex<RefCell<Option<PA0<Output<PushPull>>>>> = Mutex::new(RefCell::new(None));
 
 static mut SENSOR_QUEUE: Queue<RawSample3D, 128> = Queue::new();
 static mut PENDING: Option<([u8; 11 * BURST_SIZE], usize)> = None;
@@ -93,6 +94,36 @@ fn init_tim2() {
     tim2.cr1.modify(|_, w| w.cen().set_bit());
 }
 
+fn init_tim3() {
+    let rcc = unsafe { &*pac::RCC::ptr() };
+    let tim3 = unsafe { &*pac::TIM3::ptr() };
+
+    // 1️⃣ Enable TIM3 clock
+    rcc.apb1enr.modify(|_, w| w.tim3en().set_bit());
+
+    // 2️⃣ Reset TIM3
+    rcc.apb1rstr.modify(|_, w| w.tim3rst().set_bit());
+    rcc.apb1rstr.modify(|_, w| w.tim3rst().clear_bit());
+
+    // 3️⃣ Stop timer
+    tim3.cr1.modify(|_, w| w.cen().clear_bit());
+
+    // 4️⃣ Set prescaler and auto-reload for 10 ms interrupt
+    // PSC = 48_000 → 48 MHz / 48_000 = 1 kHz (1 ms per tick)
+    // ARR = 10 → 10 ms period
+    tim3.psc.write(|w| w.psc().bits(48_000 - 1));
+    tim3.arr.write(|w| w.arr().bits(10 - 1));
+
+    // 5️⃣ Enable update interrupt
+    tim3.dier.modify(|_, w| w.uie().set_bit());
+
+    // 6️⃣ Enable counter
+    tim3.cr1.modify(|_, w| w.cen().set_bit());
+
+    // 7️⃣ Enable NVIC interrupt for TIM3
+    unsafe { cortex_m::peripheral::NVIC::unmask(pac::Interrupt::TIM3) };
+}
+
 #[entry]
 fn main() -> ! {
     // 1. Take ARM core peripherals (SysTick, NVIC)
@@ -106,7 +137,6 @@ fn main() -> ! {
     let mut rcc = dp.RCC.constrain();
     let mut syscfg = dp.SYSCFG.constrain(&mut rcc.apb2);
 
-    //let clocks = rcc.cfgr.freeze(&mut flash.acr);
     let clocks = rcc
         .cfgr
         .use_hse(8.MHz())
@@ -128,6 +158,11 @@ fn main() -> ! {
     let mut gpiod = dp.GPIOD.split(&mut rcc.ahb);
     let mut gpioe = dp.GPIOE.split(&mut rcc.ahb);
     let mut gpiof = dp.GPIOF.split(&mut rcc.ahb);
+
+    let pps = gpioa
+        .pa0
+        .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
+    irq::free(|cs| PPS_PIN.borrow(cs).replace(Some(pps)));
 
     // 5. Initialize board-wide components
     //    LEDs
@@ -258,6 +293,7 @@ fn main() -> ! {
     let mut n_pkts = 0;
 
     init_tim2();
+    init_tim3();
     defmt::info!("Starting application...");
 
     loop {
@@ -416,4 +452,31 @@ fn EXTI1() {
 
     let exti = unsafe { &*pac::EXTI::ptr() };
     exti.pr1.write(|w| w.pr1().set_bit());
+}
+
+#[interrupt]
+fn TIM3() {
+    irq::free(|cs| {
+        let dp = unsafe { pac::Peripherals::steal() };
+        let tim3 = dp.TIM3;
+
+        let sr = tim3.sr.read();
+
+        if sr.uif().bit_is_set() {
+            tim3.sr.modify(|_, w| w.uif().clear_bit());
+
+            if let Some(pps_pin) = PPS_PIN.borrow(cs).borrow_mut().as_mut() {
+                let _ = pps_pin.set_high();
+            }
+
+            tim3.ccr1.write(|w| w.ccr().bits(PULSE_US));
+        }
+
+        if sr.cc1if().bit_is_set() {
+            tim3.sr.modify(|_, w| w.cc1if().clear_bit());
+            if let Some(pps_pin) = PPS_PIN.borrow(cs).borrow_mut().as_mut() {
+                let _ = pps_pin.set_low();
+            }
+        }
+    });
 }
