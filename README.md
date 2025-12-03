@@ -1,6 +1,7 @@
 # F3-Sensor Hub
 This project is an embedded Rust firmware for the **STM32F3 Discovery board**.
 It continuously samples the on-board **accelerometer**, **gyroscope**, and **magnetometer** sensors and streams timestamped measurements over USB using either **ASCII** or **binary** encoding.
+Additionally, it generates a 20 usec pulse in GPIO A0 every 10ms (48000 ticks) as a reference.
 
 The firmware is intended for high-rate data logging, robotics, SLAM, and filter development (EKF, complementary filter, AHRS, etc.).
 
@@ -125,4 +126,3 @@ cargo build --release
 # TODOs
 - Clean code. Currently it is a mess. 
 - Samples are currently written to a buffer during the ISR. I think this is likely the cause of high jitter (40-60 usec). Investigate alternative ways, such as writing samples in main loop provided I can guarantee that sample timestamp remains acurate, or maybe using DMA.
-- Host synchronization mechanism. Take a look at PPS 
