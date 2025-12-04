@@ -6,12 +6,14 @@ use heapless::String;
 const MAGNETOMETER: u8 = 0;
 const ACCELEROMETER: u8 = 1;
 const GYROSCOPE: u8 = 2;
+const TIMER: u8 = 3;
 
 #[derive(Debug, Clone, Copy, Format)]
 pub enum RawSample3D {
     Magnetometer(u32, [u16; 3]),
     Accelerometer(u32, [u16; 3]),
     Gyroscope(u32, [u16; 3]),
+    Timer(u32, [u16; 3]),
 }
 
 impl RawSample3D {
@@ -22,6 +24,7 @@ impl RawSample3D {
             RawSample3D::Magnetometer(ts, d) => (MAGNETOMETER, ts, d),
             RawSample3D::Accelerometer(ts, d) => (ACCELEROMETER, ts, d),
             RawSample3D::Gyroscope(ts, d) => (GYROSCOPE, ts, d),
+            RawSample3D::Timer(ts, d) => (TIMER, ts, d),
         };
 
         buf[0] = kind;
@@ -38,6 +41,7 @@ impl RawSample3D {
             RawSample3D::Magnetometer(ts, d) => ('M', ts, d),
             RawSample3D::Accelerometer(ts, d) => ('A', ts, d),
             RawSample3D::Gyroscope(ts, d) => ('G', ts, d),
+            RawSample3D::Timer(ts, d) => ('T', ts, d),
         };
 
         write!(buf, "{},{}", tag, ts).ok();
@@ -54,6 +58,7 @@ pub(crate) struct SampleStats {
     n_magnetometer: u16,
     n_accelerometer: u16,
     n_gyroscope: u16,
+    n_timer: u16,
 }
 
 impl SampleStats {
@@ -62,6 +67,7 @@ impl SampleStats {
             RawSample3D::Accelerometer(_, _) => self.n_accelerometer += 1,
             RawSample3D::Magnetometer(_, _) => self.n_magnetometer += 1,
             RawSample3D::Gyroscope(_, _) => self.n_gyroscope += 1,
+            RawSample3D::Timer(_, _) => self.n_timer += 1,
         }
     }
 }
