@@ -31,7 +31,7 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 use core::{
     cell::RefCell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU16, AtomicU32, Ordering},
     u32,
 };
 
@@ -60,10 +60,13 @@ const AF_5: u8 = 5;
 
 const DECODE_FORMAT: &str = "BINARY";
 const BURST_SIZE: usize = 10;
-const PULSE_US: u16 = 20;
+const PULSE_US: u16 = 70;
 
 static LAST_TIMESTAMP_ACC: AtomicU32 = AtomicU32::new(0);
 static LAST_TIMESTAMP_GYRO: AtomicU32 = AtomicU32::new(0);
+
+static TIMER_SSN: AtomicU16 = AtomicU16::new(0);
+
 static LSM303: Mutex<RefCell<Option<Lsm303<I2cType>>>> = Mutex::new(RefCell::new(None));
 static L3G4250: Mutex<RefCell<Option<L3g4250<SpiType, CsPin>>>> = Mutex::new(RefCell::new(None));
 static PPS_PIN: Mutex<RefCell<Option<PA0<Output<PushPull>>>>> = Mutex::new(RefCell::new(None));
@@ -108,11 +111,11 @@ fn init_tim3() {
     // 3️⃣ Stop timer
     tim3.cr1.modify(|_, w| w.cen().clear_bit());
 
-    // 4️⃣ Set prescaler and auto-reload for 10 ms interrupt
-    // PSC = 48_000 → 48 MHz / 48_000 = 1 kHz (1 ms per tick)
-    // ARR = 10 → 10 ms period
-    tim3.psc.write(|w| w.psc().bits(48_000 - 1));
-    tim3.arr.write(|w| w.arr().bits(10 - 1));
+    // 4️⃣ Set prescaler and auto-reload for 1 ms interrupt
+    // PSC = 48_000 → 48 MHz / 48 = 1 MHz (1 us per tick)
+    // ARR = 10000 → 10 ms period
+    tim3.psc.write(|w| w.psc().bits(48 - 1));
+    tim3.arr.write(|w| w.arr().bits(10000 - 1));
 
     // 5️⃣ Enable update interrupt
     tim3.dier.modify(|_, w| w.uie().set_bit());
@@ -463,6 +466,14 @@ fn TIM3() {
         let sr = tim3.sr.read();
 
         if sr.uif().bit_is_set() {
+            let now = dp.TIM2.cnt.read().bits();
+            let ssn = TIMER_SSN.load(Ordering::Acquire);
+            let next = ssn.wrapping_add(1);
+            TIMER_SSN.store(next, Ordering::Release);
+            let sample = RawSample3D::Timer(now, [next, 0, 0]);
+            unsafe {
+                let _ = SENSOR_QUEUE.enqueue(sample);
+            }
             tim3.sr.modify(|_, w| w.uif().clear_bit());
 
             if let Some(pps_pin) = PPS_PIN.borrow(cs).borrow_mut().as_mut() {
